@@ -13,8 +13,8 @@ from jose import jwt, exceptions as jose_exceptions
 from const import SERVERS
 
 wsclients = {}
+msgqueue = {}
 
-#def __init__(self, mode, cognito_client_id=None, user_pool_id=None, region=None):
 info = SERVERS['production']
 cognito_client_id = info['cognito_client_id']
 user_pool_id = info['user_pool_id']
@@ -97,10 +97,26 @@ def handlepl(shhandler, shpayload):
     }
     return hasspayload
 
-def deliverpayload(uuid, payload):
-    wsclients[uuid].
-    
+def fetchpayload(msgid):
+    payload = None
+    print('Fetching: {}'.format(msgid))
+    while payload is None:
+        print('Polling Queue')
+        #print('Queue Contains on Fetch: {}'.format(msgqueue))
+        payload = msgqueue.get(msgid)
+    print('Fetched: {}'.format(payload))
+    return payload    
+
+def storemsg(message):
+    try:
+        print('Storing MSGID: {}'.format(message['msgid']))
+        msgqueue[message['msgid']] = message
+        print('Queue Contains: {}'.format(msgqueue))
+    except ValueError:
+        disconnect_warn = 'Received invalid JSON.'
+
 class ActionsHandler(tornado.web.RequestHandler):
+    @tornado.web.asynchronous
     def post(self):
         authtokenmatch = bearerreg.match(self.request.headers['AUTHORIZATION'])
         tokes = authtokenmatch.group(1)
@@ -109,14 +125,19 @@ class ActionsHandler(tornado.web.RequestHandler):
         payload = handlepl('google_actions', gapayload)
         wsclients[tgtclient].write_message(payload)
 
+        
+        response = yield fetchpayload(payload['msgid'])
+        #print('Response: {}'.format(response))
+
 class WSHandler(tornado.websocket.WebSocketHandler):
     def open(self):
         print('Connection Opened')
         wsclients[get_intended_user(self.request.headers['AUTHORIZATION'])] = self
-        print('User: {}'.format(get_intended_user(self.request.headers['AUTHORIZATION'])))
 
     def on_message(self, message):
-        print ('message recieved: {}'.format(message))
+        print ('message recieved')
+        message = json.loads(message)
+        storemsg(message)
 
     def on_close(self):
         print('connection closed')
@@ -135,4 +156,5 @@ if __name__ == "__main__":
     myIP = socket.gethostbyname(socket.gethostname())
     print('*** Websocket Server Started at {} ***'.format(myIP))
     tornado.ioloop.IOLoop.instance().start()
+
 
