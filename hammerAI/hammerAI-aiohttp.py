@@ -1,6 +1,8 @@
 import asyncio
 import aiohttp.web
+from aiohttp import web
 
+import logging
 import os
 import json
 import socket
@@ -29,7 +31,6 @@ pool_url = 'https://cognito-idp.us-east-1.amazonaws.com/{}/.well-known/jwks.json
 def aws_key_dict(aws_region, aws_user_pool):
     aws_data = requests.get(pool_url)
     aws_jwt = json.loads(aws_data.text)
-    # We want a dictionary keyed by the kid, not a list.
     result = {}
     for item in aws_jwt['keys']:
         result[item['kid']] = item
@@ -85,12 +86,12 @@ def handlepl(shhandler, shpayload):
 
 async def fetchpayload(msgid):
     fetchedpayload = None
-    print('Fetching: {}'.format(msgid))
+    logging.info('Waiting for: {}'.format(msgid))
     while fetchedpayload is None:
-        print('Polling Queue')
-        #print('Queue Contains on Fetch: {}'.format(msgqueue))
-        fetchedpayload = msgqueue.get(msgid)
-    print('Fetched: {}'.format(fetchedpayload))
+        await asyncio.sleep(0.2)
+        fetchedpayload = msgqueue.pop(msgid)
+    logging.info('Fetched: {}'.format(fetchedpayload['msgid']))
+    payload = fetchedpayload['payload']
     return payload
 
 async def ActionsHandler(request):
@@ -98,38 +99,27 @@ async def ActionsHandler(request):
     gaAuthToken = authtokenmatch.group(1)
     tgtclient = get_client_sub_from_access_token(region, user_pool_id, gaAuthToken)
     gapayload = await request.json()
-    payload = handlepl('google_Actions', gapayload)
+    payload = handlepl('google_actions', gapayload)
+    msgid = payload['msgid']
     await wsclients[tgtclient].send_json(payload)
-    async for msg in wsclients[tgtclient]:
+    response = await fetchpayload(msgid)
+    return web.Response(text=json.dumps(response), status=200)
+
+async def WSHandler(request):
+    logging.info('Websocket connection starting')
+    ws = aiohttp.web.WebSocketResponse()
+    await ws.prepare(request)
+    logging.info('Websocket connection ready')
+    wsclients[get_intended_user(request.headers['AUTHORIZATION'])] = ws
+    async for msg in ws:
         if msg.type != aiohttp.WSMsgType.TEXT:
             disconnect_warn = 'Received non-Text message: {}'.format(msg.type)
             break
-        response = msg.json()
-        break
-    return response
-
-async def WSHandler(request):
-    print('Websocket connection starting')
-    ws = aiohttp.web.WebSocketResponse()
-    await ws.prepare(request)
-    print('Websocket connection ready')
-    wsclients[get_intended_user(request.headers['AUTHORIZATION'])] = ws
-#    async for msg in ws:
-#        if msg.type != aiohttp.WSMsgType.TEXT:
-#            disconnect_warn = 'Received non-Text message: {}'.format(msg.type)
-#            break
-#        msg = msg.json()
-#        async def storemsg(message):
-#            print('Storing MSGID: {}'.format(message['msgid']))
-#            msgqueue[message['msgid']] = message
-#            print('Queue Contains: {}'.format(msgqueue))
-#        await storemsg(msg)
-#
-#        #print(msg.data)
-#        if msg.data == 'close':
-#            await ws.close()
-#        else:
-#            await ws.send_str(msg.data + '/answer')
+        msg = msg.json()
+        async def storemsg(message):
+            logging.info('Storing MSGID: {}'.format(message['msgid']))
+            msgqueue[message['msgid']] = message
+        await storemsg(msg)
 
     print('Websocket connection closed')
     return ws
