@@ -14,6 +14,14 @@ from uuid import uuid4
 from jose import jwt, exceptions as jose_exceptions
 from const import SERVERS
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', 8080))
 
@@ -34,7 +42,6 @@ def aws_key_dict(aws_region, aws_user_pool):
     result = {}
     for item in aws_jwt['keys']:
         result[item['kid']] = item
-
     return result
 
 def get_client_sub_from_access_token(aws_region, aws_user_pool, token):
@@ -82,46 +89,49 @@ def handlepl(shhandler, shpayload):
         'handler' : shhandler,
         'payload' : shpayload
     }
+    logger.debug('Prepared Payload. ID: {} Contents {}'.format(hasspayload['msgid'], hasspayload['payload']))
     return hasspayload
 
 async def fetchpayload(msgid):
     fetchedpayload = None
-    logging.info('Waiting for: {}'.format(msgid))
+    logger.info('Waiting for: {}'.format(msgid))
     while fetchedpayload is None:
         await asyncio.sleep(0.2)
         fetchedpayload = msgqueue.pop(msgid)
-    logging.info('Fetched: {}'.format(fetchedpayload['msgid']))
+    logger.info('Fetched: {}'.format(fetchedpayload['msgid']))
     payload = fetchedpayload['payload']
     return payload
 
 async def ActionsHandler(request):
+    logger.info('Request received from Google')
     authtokenmatch = bearerreg.match(request.headers['AUTHORIZATION'])
     gaAuthToken = authtokenmatch.group(1)
     tgtclient = get_client_sub_from_access_token(region, user_pool_id, gaAuthToken)
+    logger.debug('Request intended for {}'.format(tgtclient))
     gapayload = await request.json()
     payload = handlepl('google_actions', gapayload)
-    msgid = payload['msgid']
+    #msgid = payload['msgid']
     await wsclients[tgtclient].send_json(payload)
-    response = await fetchpayload(msgid)
+    response = await fetchpayload(payload['msgid'])
     return web.Response(text=json.dumps(response), status=200)
 
 async def WSHandler(request):
     logging.info('Websocket connection starting')
     ws = aiohttp.web.WebSocketResponse()
     await ws.prepare(request)
-    logging.info('Websocket connection ready')
+    logger.info('Websocket connection ready')
     wsclients[get_intended_user(request.headers['AUTHORIZATION'])] = ws
     async for msg in ws:
         if msg.type != aiohttp.WSMsgType.TEXT:
-            disconnect_warn = 'Received non-Text message: {}'.format(msg.type)
+            logger.warn('Received non-Text message: {}'.format(msg.type))
             break
         msg = msg.json()
         async def storemsg(message):
-            logging.info('Storing MSGID: {}'.format(message['msgid']))
+            logging.debug('Storing MSGID: {}'.format(message['msgid']))
             msgqueue[message['msgid']] = message
         await storemsg(msg)
 
-    print('Websocket connection closed')
+    logger.info('Websocket connection closed')
     return ws
 
 
